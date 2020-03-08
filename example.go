@@ -1,10 +1,13 @@
 package main
 
 //go get -u -v github.com/zmb3/gogetdoc
+//go get -u -v github.com/nsf/gocode
 
 import (
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,7 +18,30 @@ import (
 )
 
 func main() {
-	r := gin.Default()
+	/// 强制日志颜色化
+	gin.ForceConsoleColor()
+	/// 禁止日志的颜色
+	//gin.DisableConsoleColor()
+
+	/// 记录日志
+	f, _ := os.Create("gin.log")
+	gin.DefaultWriter = io.MultiWriter(f, os.Stdout)
+
+	/// 定义路由日志的格式
+	gin.DebugPrintRouteFunc = func(httpMethod, absolutePath, handlerName string, nuHandlers int) {
+		log.Printf("endpoint %v %v %v %v\n", httpMethod, absolutePath, handlerName, nuHandlers)
+	}
+
+	//r := gin.Default()
+
+	/// 使用中间件
+	//新建一个没有任何默认中间件的路由
+	r := gin.New()
+	//全局中间件
+	r.Use(gin.Logger())
+	r.Use(gin.Recovery())
+	r.Use(Logger())
+
 	//// gin.H 是 map[string]interface{} 的一种快捷方式
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(200, gin.H{
@@ -135,6 +161,54 @@ func main() {
 	r.HEAD("/someHead", defaulthttp)
 	r.OPTIONS("/someOptions", defaulthttp)
 
+	/// 只绑定 url 查询字符串
+	type Person struct {
+		Name    string `form:"name" uri:"name" binding:"required"`
+		Address string `form:"address" uri:"address" binding:"required"`
+	}
+	var p Person
+	r.Any("/ShouldBindQuery", func(c *gin.Context) {
+		if c.ShouldBindQuery(&p) == nil {
+			fmt.Println("====== Only Bind By Query String ======")
+			fmt.Println(p.Name)
+			fmt.Println(p.Address)
+		}
+		c.String(http.StatusOK, "Success")
+	})
+
+	/// 当在中间件或 handler 中启动新的 Goroutine 时，不能使用原始的上下文，必须使用只读副本。
+	r.GET("/long_async", func(c *gin.Context) {
+		cc := c.Copy() //应该类似于增加引用计数
+		go func() {
+			time.Sleep(5 * time.Second)
+			fmt.Println("Done in path" + cc.Request.URL.Path)
+		}()
+		c.String(http.StatusOK, "Success")
+	})
+
+	/// 绑定URL
+	r.GET("/bindingurl/:name/:address", func(c *gin.Context) {
+		type Person struct {
+			Name    string `form:"name" uri:"name" binding:"required"`
+			Address string `form:"address" uri:"address" binding:"required"`
+		}
+		var p Person
+		if err := c.ShouldBindUri(&p); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"msg": err})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"name": p.Name, "address": p.Address})
+	})
+
+	/// 重定向
+	r.GET("/redirect", func(c *gin.Context) {
+		c.Redirect(http.StatusMovedPermanently, "https://github.com/gongluck/gindemo.git")
+	})
+	r.GET("/redirect2", func(c *gin.Context) {
+		c.Request.URL.Path = "/redirect"
+		r.HandleContext(c)
+	})
+
 	/// 优雅地重启或停止
 	srv := http.Server{
 		Addr:    ":8080",
@@ -156,4 +230,21 @@ func main() {
 
 func defaulthttp(c *gin.Context) {
 	fmt.Println("http", c.Request.Method)
+}
+
+/// 自定义中间件
+func Logger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		t := time.Now()
+		// 设置变量
+		c.Set("mymiddleware", "gongluck")
+		// 请求前
+		c.Next()
+		// 请求后
+		latency := time.Since(t)
+		log.Print(latency)
+		// 获取发送的 status
+		status := c.Writer.Status()
+		log.Println(status)
+	}
 }
